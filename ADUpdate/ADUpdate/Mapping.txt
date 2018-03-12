@@ -1,0 +1,4 @@
+﻿Employee_Number=employeeID
+Firstname=givenName
+Lastname=sn
+Department_Name=department
