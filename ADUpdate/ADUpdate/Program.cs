@@ -48,6 +48,7 @@ namespace ADUpdate
             }
 
             var detector = new FileHelpers.Detection.SmartFormatDetector();
+            detector.MaxSampleLines = 10;
             var formats = detector.DetectFileFormat(opts.InputFile);
             bool keyFound = false;
             DelimitedClassBuilder dcb;
@@ -102,8 +103,9 @@ namespace ADUpdate
             }
             dynamic[] sourceFile = fileEngine.ReadFile(opts.InputFile);
             Console.WriteLine();
-            Console.WriteLine("Input File loaded; " + sourceFile.Length + " records");
+            Console.WriteLine("Input File loaded; " + (sourceFile.Length - 1) + " records");
             bool firstLineSkipped = false;
+            int count = 1;
             foreach (dynamic rec in sourceFile)
             {
                 if (firstLineSkipped)
@@ -114,7 +116,7 @@ namespace ADUpdate
                     if (result.Count == 1)
                     {
                         var user = result[0].GetDirectoryEntry();
-                        Console.WriteLine("Updating user " + user.Name);
+                        Console.WriteLine(count + "/" + (sourceFile.Length - 1) + ": Checking user " + user.Name);
 
                         foreach (var mapping in fieldMappings)
                         {
@@ -123,11 +125,42 @@ namespace ADUpdate
                                 continue;
                             }
                             bool updateValue = false;
+                            string oldValue = string.Empty;
+                            string newValue = string.Empty;
+                            newValue = Dynamic.InvokeGet(rec, mapping.Key);
                             if (user.Properties[mapping.Value].Value != null)
                             {
-                                if (user.Properties[mapping.Value].Value.ToString() != Dynamic.InvokeGet(rec, mapping.Key))
+                                if (mapping.Value.ToLower() == "manager")
                                 {
-                                    updateValue = true;
+                                    if (!string.IsNullOrEmpty(Dynamic.InvokeGet(rec, mapping.Key)))
+                                    {
+                                        // Manager has to be treated differently, as its a DN reference to another AD object.
+                                        string[] man = Dynamic.InvokeGet(rec, mapping.Key).Split(' ');
+
+                                        // Lookup what the manager DN SHOULD be
+                                        DirectorySearcher managerSearch = new DirectorySearcher(ldapConnection);
+                                        managerSearch.PropertiesToLoad.Add("distinguishedName");
+                                        managerSearch.Filter = "(&(givenName=" + man[0] + ")(sn=" + man[1] + "))";
+                                        var manager = managerSearch.FindOne();
+                                        if (manager != null)
+                                        {
+                                            newValue = manager.GetDirectoryEntry().Properties["distinguishedName"].Value.ToString();
+
+                                            if (user.Properties[mapping.Value].Value.ToString() != newValue)
+                                            {
+                                                updateValue = true;
+                                                oldValue = user.Properties[mapping.Value].Value.ToString();
+                                            }
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    if (user.Properties[mapping.Value].Value.ToString() != Dynamic.InvokeGet(rec, mapping.Key))
+                                    {
+                                        updateValue = true;
+                                        oldValue = user.Properties[mapping.Value].Value.ToString();
+                                    }
                                 }
                             }
                             else
@@ -137,11 +170,30 @@ namespace ADUpdate
 
                             if (updateValue)
                             {
-                                Console.WriteLine(" >> Value to be updated (" + mapping.Value + ") ");
+                                if (mapping.Value.ToLower() == "manager")
+                                {
+                                    if (!string.IsNullOrEmpty(Dynamic.InvokeGet(rec, mapping.Key)))
+                                    {
+                                        // Manager has to be treated differently, as its a DN reference to another AD object.
+                                        string[] man = Dynamic.InvokeGet(rec, mapping.Key).Split(' ');
+
+                                        // Lookup what the manager DN SHOULD be
+                                        DirectorySearcher managerSearch = new DirectorySearcher(ldapConnection);
+                                        managerSearch.PropertiesToLoad.Add("distinguishedName");
+                                        managerSearch.Filter = "(&(givenName=" + man[0] + ")(sn=" + man[1] + "))";
+                                        var manager = managerSearch.FindOne();
+                                        if (manager != null)
+                                        {
+                                            newValue = manager.GetDirectoryEntry().Properties["distinguishedName"].Value.ToString();
+                                        }
+                                    }
+                                }
+
+                                Console.WriteLine(" >> Value to be updated (" + mapping.Value + ") - " + oldValue + " != " + newValue);
                                 if (!opts.WhatIf)
                                 {
                                     user.Properties[mapping.Value].Clear();
-                                    user.Properties[mapping.Value].Add(Dynamic.InvokeGet(rec, mapping.Key));
+                                    user.Properties[mapping.Value].Add(newValue);
                                 }
                             }
                         }
@@ -156,12 +208,12 @@ namespace ADUpdate
                     {
                         if (result.Count > 1)
                         {
-                            Console.WriteLine(" -> Multiple entries returned; " + key);
+                            Console.WriteLine(count + "/" + (sourceFile.Length - 1) + ": -> Multiple entries returned; " + key);
                             continue;
                         }
                         else
                         {
-                            Console.WriteLine(" -> No record found for " + key);
+                            Console.WriteLine(count + "/" + (sourceFile.Length - 1) + ": -> No record found for " + key);
                             if (opts.LooseMatching)
                             {
                                 string userFullName = string.Empty;
@@ -190,7 +242,7 @@ namespace ADUpdate
                                 if (result.Count == 1)
                                 {
                                     var user = result[0].GetDirectoryEntry();
-                                    Console.WriteLine("Updating user " + user.Name);
+                                    Console.WriteLine("Checking user " + user.Name);
 
                                     foreach (var mapping in fieldMappings)
                                     {
@@ -231,6 +283,7 @@ namespace ADUpdate
                             }
                         }
                     }
+                    count++;
                 }
                 firstLineSkipped = true;
             }
